@@ -1,0 +1,253 @@
+---
+title: "Sabermetrics"
+author: "Alex Bank"
+date: "3/30/2018"
+output: pdf_document
+---
+
+```{r include=FALSE}
+library(RSQLite)
+library(dplyr)
+driver <- dbDriver("SQLite")
+conn <- dbConnect(driver,  dbname = "lahman2016.sqlite")
+```
+
+##Lecture 1
+We can start off this brief examination of Sabermetrics by looking at the fields contained in the "Salaries" table.
+```{r}
+dbListFields(conn, 'Salaries')
+```
+From this table, we can extract a dataframe with year, player salary, and league information. We can then get the number of observations in this table, the range of years available, and the different leagues using R.
+```{r}
+df <- dbGetQuery(conn, '
+                 SELECT yearID AS year, salary, lgID AS league
+                 FROM Salaries')
+nrow(df)
+range(df$year)
+unique(df$league)
+```
+We can see that this is a massive set of observations dating back to 1985. We can visualize some of the trends in the data by plotting year vs. salary. The following graph makes it pretty evident that salaries have increased over the years, and have spread out. Below that graph is a nice, smooth representation of the same data.
+
+```{r echo=FALSE}
+plot(x=jitter(df$year), y=df$salary, pch='.',
+     xlab='Year', ylab='Salary')
+smoothScatter(x=jitter(df$year), y=df$salary,
+              xlab='Year', ylab='Salary')
+```
+
+Now we can use R to fit a linear model to the data, using year and league as predictors. Looking below at the summary of the model, the non-symetric residuals imply that the model predicts salaries far from the actual salaries, which makes sense because there is a huge range of salaries, and we saw that recently salaries have been more spread out than in the 80s. Moving on to the coefficients, it seems that the model is actually capturing a trend; the high t values for the model and in relation to year indicate that there is a true relationship, and that we can reject the null hypothesis. However, the t value for league is much smaller, indicating that the linear fit there may be a product of error. Indeed, the large standard error values with respect to the t values calls into question the validity of all the trends.
+The multiple R-squared value is only 0.12, so only 12% of the variation in the data is explained by year and league. This is not a very high value, and reconfirms our previous suspicions regarding the validity of these trends (particularly with respect to league since the t value is much smaller).
+```{r echo=FALSE}
+fit <- lm(salary ~ year + league, data = df)
+summary(fit)
+```
+Looking at a logarithmic model, there is a very different story. The residuals are symetrically distributed, the t values are high relative to the standard error, and the multiple R-squared value increased to $0.21$. All of these metrics point to a much better model for the data, meaning that salaries have closer to exponential growth with the years. Again, the t value for league is much smaller than that for year, meaing that the relationship between league and salary is much smaller than that of year and salary.
+```{r, echo=FALSE}
+inds <- which(df$salary<=0)
+cleandf <- df[-inds,]
+fitlog <- lm(log(salary) ~ year + league, data = cleandf)
+summary(fitlog)
+```
+
+##Lecture 2
+```{r echo=FALSE}
+teamsal <- dbGetQuery(conn, '
+                      SELECT teamID AS team, SUM(salary) AS total_salary
+                      FROM Salaries
+                      WHERE yearID = 2016
+                      GROUP BY team
+                      ORDER BY total_salary DESC')
+head(teamsal, 1); tail(teamsal, 1)
+```
+In 2016, the New York Yankees had the highest team salary, while the Tampa Bay Rays had the lowest team salary. We can see the same data again but with each team's full name by joining this table with the "Teams" table (only the head of this table is included).
+```{r echo=FALSE}
+teamSalWNames <- dbGetQuery(conn, "
+                            SELECT Teams.name AS team, SUM(Salaries.salary) AS total_salary
+                            FROM Salaries
+                            JOIN Teams
+                            ON Salaries.teamID = Teams.teamIDBR
+                            WHERE Salaries.yearID = 2016 AND Teams.yearID = 2016
+                            GROUP BY team
+                            ORDER BY total_salary DESC")
+teamSalWNames %>% head()
+```
+This next data frame contains the total salary and league for every unique combination of year and team. It has 918 observations.
+```{r echo=FALSE}
+number14 <- dbGetQuery(conn, "
+                       SELECT yearID AS year,
+                              teamID AS team,
+                              SUM(salary) AS total_salary,
+                              lgID
+                       FROM Salaries
+                       GROUP BY year, team
+                       ")
+message('Rows of observations: ',nrow(number14))
+```
+```{r, echo=FALSE}
+number15 <- number14
+number15$sal_in_mil <- number15$total_salary / 1000000
+message('The mean salary (in millions) for the NL in 2016: ',
+        mean(number15$sal_in_mil[which(number15$lgID=='NL'&number15$year==2016)]))
+message('The mean salary (in millions) for the AL in 2016: ',
+        mean(number15$sal_in_mil[which(number15$lgID=='AL'&number15$year==2016)]))
+```
+```{r, echo=FALSE}
+lim <- max(number15$sal_in_mil)
+boxplot(sal_in_mil ~ year, data = number15[which(number15$lgID=='NL'),],
+        xlab='Year', ylab='Total Team Salary (in millions)', ylim=c(0,lim),
+        main='National League')
+boxplot(sal_in_mil ~ year, data = number15[which(number15$lgID=='AL'),],
+        xlab='Year', ylab='Total Team Salary (in millions)', ylim=c(0,lim),
+        main='American League')
+```
+
+Interestingly, the barplots show that the American League tends to have a greater spread of team salaries, but both leagues historically have approximately the same median team salary.
+
+```{r, echo=FALSE}
+number18 <- dbGetQuery(conn, "
+                       SELECT Salaries.yearID AS year,
+                              Salaries.teamID AS team,
+                              Salaries.lgID AS league,
+                              SUM(salary) AS total_salary
+                       FROM Salaries
+                       JOIN SeriesPost
+                       ON Salaries.teamID = SeriesPost.teamIDwinner AND
+                          Salaries.yearID = SeriesPost.yearID AND
+                          SeriesPost.round = 'WS'
+                       GROUP BY year
+                       ORDER BY year")
+plot(x=jitter(number15$year), y=number15$sal_in_mil,
+     pch=4, col='darkgray',
+     xlab='Year', ylab = 'Salary in Millions')
+nlWinners <- number18[which(number18$league=='NL'),]
+alWinners <- number18[which(number18$league=='AL'),]
+points(x=nlWinners$year, y=nlWinners$total_salary/1000000,
+       pch=16, col='red')
+points(x=alWinners$year, y=alWinners$total_salary/1000000,
+       pch=16, col='blue')
+text(x=nlWinners$year, y=nlWinners$total_salary/1000000,
+     labels = nlWinners$team, cex = .5, pos = 3)
+text(x=alWinners$year, y=alWinners$total_salary/1000000,
+     labels = alWinners$team, cex = .5, pos = 3)
+```
+
+There was a period from about 1993 until 2000 where the teams that spent the most won the World Series. Post-2000, team salaries became more spread out. Only Boston and New York have won the World Series in the past 18 years paying a team significantly more than other teams. All the other World Series winners from that period come from the upper-middle salary range.
+
+##Lecture 3
+```{r}
+number21 <- dbGetQuery(conn, "
+                       SELECT year, MAX(total_salary) AS max_salary
+                       FROM (
+                              SELECT yearID AS year,
+                                     teamID AS team,
+                                     SUM(salary) AS total_salary,
+                                     lgID
+                              FROM Salaries
+                              GROUP BY year, team
+                            ) sub
+                       GROUP BY year
+                       ORDER BY year")
+number21
+```
+
+```{r}
+number22 <- dbGetQuery(conn, "
+                       SELECT SeriesPost.yearID AS year,
+                              SeriesPost.teamIDwinner AS teamID,
+                              COUNT(AllstarFull.playerID) AS num_allstars
+                       FROM SeriesPost
+                       JOIN AllstarFull
+                       ON SeriesPost.yearID = AllstarFull.yearID AND
+                          SeriesPost.teamIDwinner = AllstarFull.teamID
+                       WHERE SeriesPost.round = 'WS'
+                       GROUP BY year
+                       ORDER BY num_allstars DESC
+                       ")
+number22 %>% head()
+```
+```{r}
+number23 <- dbGetQuery(conn, "
+                       SELECT yearID AS year, SUM(HR) AS total_HR
+                       FROM Batting
+                       GROUP BY year")
+plot(number23$year, number23$total_HR, xlab='Year', ylab='Total HRs')
+```
+
+The above graph makes it very evident that home runs have increased in frequency over time, in an almost-exponential fashion.
+While the general trend in the MLB is to hit more home runs, this does not determine whether individual players hit more home runs during their career. To figure out this question, we can look at a year-to-year plus/minus. Each player's plus/minus for the year is the number of homers they hit that year minus their home runs from the year before. This means that all players start their career with a plus/minus of zero, then the statistic varies from there. The following graph visualizes this metric for players with at least 10 years in the MLB.
+
+```{r echo=FALSE}
+number24 <- dbGetQuery(conn, '
+                       SELECT yearID AS year, playerID, HR
+                       FROM Batting
+                       GROUP BY year, playerID
+                       ORDER BY playerID, year')
+tenYrPlayers <- dbGetQuery(conn, '
+                           SELECT playerID, COUNT(*) AS career_years
+                           FROM Batting
+                           GROUP BY playerID
+                           HAVING career_years >= 10')
+keep <- which(number24$playerID %in% tenYrPlayers$playerID)
+number24 <- number24[keep,]
+
+players <- unique(number24$playerID)
+plusminus <- function(HRdf, playerID) {
+  singlePlayer <- HRdf[which(playerID == HRdf$playerID),]
+  n <- nrow(singlePlayer)
+  singlePlayer$year <- 1:n
+  singlePlayer$plusminus <- numeric(n)
+  for (i in 2:n) singlePlayer$plusminus[i] <- singlePlayer$HR[i]-singlePlayer$HR[i-1]
+  return(singlePlayer)
+}
+
+sp <- plusminus(number24, players[1])
+plot(x=jitter(sp$year),y=jitter(sp$plusminus),pch='.',col='blue',xlab='Years in MLB',ylab='Plus/Minus HRs from Previous Year',
+     xlim=c(1,max(tenYrPlayers$career_years)), ylim = c(-30,30))
+
+for (p in players[2:length(players)]) {
+  sp <- plusminus(number24, p)
+  points(x=jitter(sp$year), y=jitter(sp$plusminus), pch='.', col='blue')
+}
+  
+
+```
+
+The graph shows most players do not hit more home runs as their careers progress in the MLB. The highest concentration of points is at a plus/minus of zero and the distribution is about symetric, meaning players are for the most part consistent. In fact, the best players (or at least the ones with the longest careers) have their plus/minus centered at zero, indicating that home run consistency may lead to longer careers.
+
+One aspect of baseball I wanted to analyze was the evolution of the stolen base. From the begining of our database's record until about 1950, there is no real trend of how *well* people stole bases. Looking at the ratio of stolen bases to runners caught stealing, we can see that around 1950 the pitcher-catcher duos had started to figure out how to keep runners from stealing, keeping them to less than 1.5 steals per out after a period of 25 or so years where runners were getting 2 to 3 bases per out. But after 1950, runners have  steadily increased their ratio of completed steals to times caught stealing.
+
+```{r echo=FALSE}
+steal_ratio <- dbGetQuery(conn, "
+                               SELECT yearID AS year, SUM(SB)*1.0/SUM(CS) AS steal_ratio
+                               FROM Batting
+                               GROUP BY year
+                               ORDER BY year")
+plot(steal_ratio, xlab='Year', ylab='SB/CS', main='Ratio of Stolen Bases')
+```
+
+Since runners are getting on base stealing more often now than in the past, the question becomes whether teams are stealing more, or if they have become smarter about stealing. Looking at the data from 1950 until the present, teams have attempted to steal (successful or not) about as much as they have in the past per at-bat. Modeling year to steal attempts per at-bat explains less than two percent of the variation. So teams have gotten smarter at stealing; they are attempting to steal only slightly more than in the past, but have increased their success at getting to the bag.
+
+```{r echo=FALSE}
+data <- dbGetQuery(conn, "
+                   SELECT yearID AS year,
+                          teamID AS team,
+                          SUM(SB + CS) AS steal_attempts,
+                          SUM(AB),
+                          SUM(SB + CS)*1.0/AB AS steal_attempts_per_AB
+                   FROM Batting
+                   WHERE year >= 1950
+                   GROUP BY year, team
+                   HAVING AB > 100 AND steal_attempts > 10")
+plot(x=jitter(data$year), y=data$steal_attempts_per_AB, pch=4, col='lightslategrey',
+     xlab='Year',ylab='Steal Attempts per At Bat',
+     main = 'Are Teams Stealing More or Getting Smarter at Stealing?')
+fit <- lm(steal_attempts_per_AB ~ year, data = data)
+abline(fit, col='firebrick')
+summary(fit)
+```
+
+
+
+
+
+
